@@ -1,0 +1,21 @@
+# Secret API Key & Env files
+.env
+*.env
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.pyc
+venv/
+env/
+.venv/
+
+# Streamlit Cache
+.streamlit/
+
+# Dataset & Large Files (Don't push huge CSV files)
+*.csv
+!sample_data.csv # Keep a small sample CSV if you have one
+
+# OS Files
+.DS_Store
+Thumbs.db
