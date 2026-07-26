@@ -267,7 +267,7 @@ st.markdown("""
 
     /* ── Agent response ───────────────────────────────────────────── */
     .agent-response {
-        background: #FFFFFF;
+        background: #5f6670;
         border-radius: 12px;
         padding: 20px 22px;
         border: 1px solid #E3E6EC;
