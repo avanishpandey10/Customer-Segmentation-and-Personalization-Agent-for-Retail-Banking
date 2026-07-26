@@ -21,38 +21,59 @@ def get_segment_profiles(df: pd.DataFrame) -> dict:
     }
 
 
-def explain_customer_segment(customer_row: dict) -> str:
+def explain_customer_segment(customer_row: dict, segment_df: pd.DataFrame = None) -> str:
     """
-    Per-customer explainability: generates a natural-language explanation of
-    WHY this specific customer landed in their segment, tied to their actual
-    balance/frequency values. Required by the brief: "Explainability (why a
-    customer belongs to a segment)".
+    Per-customer explainability: explains WHY this specific customer landed in
+    their segment, tied to their actual values. When the full segmented
+    dataframe is available, adds a percentile/ratio comparison against the
+    Regular-segment average for extra concreteness (e.g. "3x the Regular
+    average, top 8% by balance").
     """
     segment = customer_row.get("Segment", "Unknown")
-    bal = customer_row.get("avg_balance", customer_row.get("current_balance", "N/A"))
+    bal_col = "avg_balance" if "avg_balance" in customer_row else "current_balance"
+    bal = customer_row.get(bal_col, "N/A")
     freq = customer_row.get("transaction_frequency", "N/A")
 
-    reason_map = {
+    base_reason = {
         "Priority": (
-            f"This customer is in **Priority** because their average balance (₹{bal}) and/or "
-            f"transaction frequency ({freq}) exceed the high-value thresholds "
-            f"(balance > ₹50,000, or balance > ₹20,000 with more than 10 transactions)."
+            f"average balance (₹{bal}) and/or transaction frequency ({freq}) exceed the "
+            f"Priority thresholds (balance > ₹50,000, or balance > ₹20,000 with 10+ transactions)."
         ),
         "Regular": (
-            f"This customer is in **Regular** because their balance (₹{bal}) and activity "
-            f"(frequency: {freq}) fall in the moderate range — active enough to avoid Dormant, "
-            f"but not yet meeting the Priority thresholds."
+            f"balance (₹{bal}) and activity (frequency: {freq}) are moderate — active enough to "
+            f"avoid Dormant, but not yet meeting the Priority thresholds."
         ),
         "Dormant": (
-            f"This customer is in **Dormant** because their transaction frequency ({freq}) is "
-            f"very low (≤1) or their balance (₹{bal}) is under ₹1,000, indicating an inactive account."
+            f"transaction frequency ({freq}) is very low (≤1) or balance (₹{bal}) is under ₹1,000, "
+            f"indicating an inactive account."
         ),
-    }
-    return reason_map.get(segment, f"Segment '{segment}' has no explanation rule defined.")
+    }.get(segment, f"segment '{segment}' has no explanation rule defined.")
+
+    extra = ""
+    if segment_df is not None and "Segment" in segment_df.columns and bal_col in segment_df.columns:
+        try:
+            reg_avg_bal = segment_df.loc[segment_df["Segment"] == "Regular", bal_col].mean()
+            if isinstance(bal, (int, float)) and reg_avg_bal and reg_avg_bal > 0:
+                ratio = bal / reg_avg_bal
+                percentile_below = (segment_df[bal_col] < bal).mean() * 100
+                extra = (
+                    f" For context: this balance is about {ratio:.1f}x the Regular-segment average, "
+                    f"placing this customer in the top {100 - percentile_below:.0f}% of all customers by balance."
+                )
+        except Exception:
+            pass
+
+    return f"This customer is in **{segment}** because their {base_reason}{extra}"
 
 
-def get_cross_sell_recommendations(segment_name: str) -> str:
-    """Returns tailored banking product recommendations per customer persona."""
+def get_cross_sell_recommendations(segment_name: str, customer_row: dict = None) -> str:
+    """
+    Returns tailored banking product recommendations per customer persona.
+    If a specific customer_row is provided, adds a secondary rule layer on
+    top of the base segment strategy (e.g. high avg_transaction_size within
+    Priority gets a different pitch than a Priority customer with modest
+    transaction sizes).
+    """
     segment_clean = str(segment_name).strip().capitalize()
 
     recommendations = {
@@ -76,7 +97,25 @@ def get_cross_sell_recommendations(segment_name: str) -> str:
         )
     }
 
-    return recommendations.get(
+    base = recommendations.get(
         segment_clean,
         f"Unknown segment '{segment_name}'. Please choose from: Priority, Regular, or Dormant."
     )
+
+    if customer_row and segment_clean in recommendations:
+        avg_tx = customer_row.get("avg_transaction_size")
+        if segment_clean == "Priority" and isinstance(avg_tx, (int, float)) and avg_tx > 10000:
+            base += (
+                "\n\n• **Secondary rule triggered:** Large average transaction size (₹{:.0f}) — "
+                "also propose a Platinum/Metal Credit Card and forex-fee waivers for likely "
+                "high-value or international spend.".format(avg_tx)
+            )
+        elif segment_clean == "Dormant":
+            recency = customer_row.get("recency_days")
+            if isinstance(recency, (int, float)) and recency > 90:
+                base += (
+                    f"\n\n• **Secondary rule triggered:** No activity in {int(recency)}+ days — "
+                    f"prioritize a win-back SMS/email campaign before offering any new product."
+                )
+
+    return base
