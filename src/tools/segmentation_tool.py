@@ -1,12 +1,15 @@
 import pandas as pd
 import numpy as np
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+from src.logger_setup import get_logger
+
+logger = get_logger(__name__)
 
 # Columns that actually define "priority-ness" per the hackathon brief
 # (balance being maintained + frequency of transactions), used to label
-# KMeans clusters instead of trusting arbitrary column order.
+# clusters instead of trusting arbitrary column order.
 RANKING_COLS_PRIORITY = ["avg_balance", "current_balance", "transaction_frequency"]
 
 PRIORITY_BALANCE_THRESHOLD = 50000
@@ -14,19 +17,64 @@ PRIORITY_BALANCE_WITH_FREQ = 20000
 PRIORITY_FREQ_THRESHOLD = 10
 
 
+def _rank_and_label_clusters(df_segmented: pd.DataFrame, num_cols, scaled_data: np.ndarray, cluster_col: str = "Cluster"):
+    """Ranks clusters by a balance+frequency composite score and maps them to Priority/Regular/Dormant."""
+    ranking_cols = [c for c in RANKING_COLS_PRIORITY if c in num_cols]
+    if not ranking_cols:
+        ranking_cols = [num_cols[0]]
+    ranking_idxs = [list(num_cols).index(c) for c in ranking_cols]
+
+    cluster_scores = (
+        pd.Series(scaled_data[:, ranking_idxs].mean(axis=1), index=df_segmented.index)
+        .groupby(df_segmented[cluster_col])
+        .mean()
+        .sort_values()
+    )
+    label_map = {cluster_scores.index[0]: "Dormant", cluster_scores.index[-1]: "Priority"}
+    for idx in cluster_scores.index:
+        if idx not in label_map:
+            label_map[idx] = "Regular"
+    return label_map, ranking_cols
+
+
+def _cluster_eval_metrics(scaled_data: np.ndarray, labels: np.ndarray) -> dict:
+    """Computes silhouette / Davies-Bouldin / Calinski-Harabasz, subsampled for speed on large data."""
+    metrics = {}
+    unique_labels = set(labels)
+    if len(unique_labels) < 2:
+        metrics["evaluation_note"] = "Fewer than 2 clusters found — evaluation metrics not meaningful."
+        return metrics
+    try:
+        if len(scaled_data) > 5000:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(len(scaled_data), 5000, replace=False)
+            sample, sample_labels = scaled_data[idx], labels[idx]
+        else:
+            sample, sample_labels = scaled_data, labels
+
+        metrics["silhouette_score"] = round(float(silhouette_score(sample, sample_labels)), 3)
+        metrics["davies_bouldin_score"] = round(float(davies_bouldin_score(sample, sample_labels)), 3)
+        metrics["calinski_harabasz_score"] = round(float(calinski_harabasz_score(sample, sample_labels)), 2)
+        metrics["quality"] = "Strong separation" if metrics["silhouette_score"] > 0.5 else "Moderate overlap"
+    except Exception as e:
+        metrics["evaluation_error"] = str(e)
+    return metrics
+
+
 def segment_customers(df: pd.DataFrame, method: str = "rules", n_clusters: int = 3) -> tuple[pd.DataFrame, dict]:
     """
-    Segments customers into Priority, Regular, and Dormant groups.
+    Segments customers into Priority, Regular, and Dormant groups using one of:
+    'rules', 'kmeans', 'hierarchical', or 'dbscan'.
     Returns a tuple of (segmented_dataframe, evaluation_metrics_dict).
     """
     df_segmented = df.copy()
     eval_metrics = {"method": method}
+    logger.info(f"Running segmentation | method={method} n_clusters={n_clusters} rows={len(df_segmented)}")
 
     if method == "rules":
         def assign_segment(row):
             bal = row.get("avg_balance", row.get("current_balance", 0))
             freq = row.get("transaction_frequency", 0)
-
             if bal > PRIORITY_BALANCE_THRESHOLD or (bal > PRIORITY_BALANCE_WITH_FREQ and freq > PRIORITY_FREQ_THRESHOLD):
                 return "Priority"
             elif freq <= 1 or bal < 1000:
@@ -41,68 +89,75 @@ def segment_customers(df: pd.DataFrame, method: str = "rules", n_clusters: int =
             "Dormant": "transaction_frequency <= 1 OR avg_balance < 1000",
             "Regular": "everything else",
         }
-        # Even rule-based segmentation should report a basic "evaluation" —
-        # required by the brief's "Model evaluation" functional requirement.
         eval_metrics["segment_distribution"] = df_segmented["Segment"].value_counts().to_dict()
+        return df_segmented, eval_metrics
 
-    elif method == "kmeans":
-        num_cols = df_segmented.select_dtypes(include=["float64", "int64"]).columns
-        if len(num_cols) >= 2:
-            scaler = StandardScaler()
-            scaled_data = scaler.fit_transform(df_segmented[num_cols])
+    num_cols = df_segmented.select_dtypes(include=["float64", "int64"]).columns
+    if len(num_cols) < 2:
+        eval_metrics["evaluation_error"] = "Not enough numeric columns for ML-based clustering."
+        df_segmented["Segment"] = "Regular"
+        return df_segmented, eval_metrics
 
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            clusters = kmeans.fit_predict(scaled_data)
-            df_segmented["Cluster"] = clusters
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(df_segmented[num_cols])
 
-            # --- FIX: rank clusters using balance + frequency signal, not
-            # an arbitrary "first numeric column". Falls back gracefully if
-            # none of the expected columns exist. ---
-            ranking_cols = [c for c in RANKING_COLS_PRIORITY if c in num_cols]
-            if not ranking_cols:
-                ranking_cols = [num_cols[0]]
-            ranking_idxs = [list(num_cols).index(c) for c in ranking_cols]
+    if method == "kmeans":
+        model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        clusters = model.fit_predict(scaled_data)
+        df_segmented["Cluster"] = clusters
+        label_map, ranking_cols = _rank_and_label_clusters(df_segmented, num_cols, scaled_data)
+        df_segmented["Segment"] = df_segmented["Cluster"].map(label_map)
+        eval_metrics["inertia"] = round(float(model.inertia_), 2)
+        eval_metrics["ranking_columns_used"] = ranking_cols
 
-            cluster_scores = (
-                pd.Series(scaled_data[:, ranking_idxs].mean(axis=1), index=df_segmented.index)
-                .groupby(df_segmented["Cluster"])
-                .mean()
-                .sort_values()
+    elif method == "hierarchical":
+        model = AgglomerativeClustering(n_clusters=n_clusters)
+        clusters = model.fit_predict(scaled_data)
+        df_segmented["Cluster"] = clusters
+        label_map, ranking_cols = _rank_and_label_clusters(df_segmented, num_cols, scaled_data)
+        df_segmented["Segment"] = df_segmented["Cluster"].map(label_map)
+        eval_metrics["ranking_columns_used"] = ranking_cols
+
+    elif method == "dbscan":
+        model = DBSCAN(eps=0.8, min_samples=5)
+        clusters = model.fit_predict(scaled_data)
+        df_segmented["Cluster"] = clusters
+        # DBSCAN's noise points (-1) are, by definition, outliers/inactive — treat as Dormant.
+        non_noise_mask = clusters != -1
+        if non_noise_mask.sum() > 0 and len(set(clusters[non_noise_mask])) >= 1:
+            label_map, ranking_cols = _rank_and_label_clusters(
+                df_segmented[non_noise_mask], num_cols, scaled_data[non_noise_mask]
             )
+        else:
+            label_map, ranking_cols = {}, []
+        label_map[-1] = "Dormant"
+        df_segmented["Segment"] = df_segmented["Cluster"].map(label_map).fillna("Regular")
+        eval_metrics["ranking_columns_used"] = ranking_cols
+        eval_metrics["noise_points"] = int((clusters == -1).sum())
 
-            label_map = {
-                cluster_scores.index[0]: "Dormant",
-                cluster_scores.index[-1]: "Priority",
-            }
-            for idx in cluster_scores.index:
-                if idx not in label_map:
-                    label_map[idx] = "Regular"
+    else:
+        raise ValueError(f"Unknown segmentation method: {method}")
 
-            df_segmented["Segment"] = df_segmented["Cluster"].map(label_map)
-            df_segmented.drop(columns=["Cluster"], inplace=True)
-            eval_metrics["ranking_columns_used"] = ranking_cols
-            eval_metrics["segment_distribution"] = df_segmented["Segment"].value_counts().to_dict()
-
-            # Model Evaluation Metrics
-            try:
-                # Subsample for fast evaluation calculation during live demos
-                if len(scaled_data) > 5000:
-                    rng = np.random.default_rng(42)
-                    sample_idx = rng.choice(len(scaled_data), 5000, replace=False)
-                    eval_sample = scaled_data[sample_idx]
-                    sample_clusters = clusters[sample_idx]
-                else:
-                    eval_sample = scaled_data
-                    sample_clusters = clusters
-
-                sil_score = silhouette_score(eval_sample, sample_clusters)
-                eval_metrics["silhouette_score"] = round(float(sil_score), 3)
-                eval_metrics["inertia"] = round(float(kmeans.inertia_), 2)
-                eval_metrics["quality"] = "Strong separation" if sil_score > 0.5 else "Moderate overlap"
-            except Exception as e:
-                eval_metrics["evaluation_error"] = str(e)
-
+    df_segmented.drop(columns=["Cluster"], inplace=True)
+    eval_metrics["segment_distribution"] = df_segmented["Segment"].value_counts().to_dict()
+    eval_metrics.update(_cluster_eval_metrics(scaled_data, clusters))
     return df_segmented, eval_metrics
+
+
+def compare_clustering_methods(df: pd.DataFrame, n_clusters: int = 3) -> dict:
+    """
+    Runs KMeans, Hierarchical, and DBSCAN back-to-back and returns their
+    evaluation metrics side by side, so the agent can justify which
+    algorithm best fits the data (silhouette / Davies-Bouldin / Calinski-Harabasz).
+    """
+    results = {}
+    for method in ["kmeans", "hierarchical", "dbscan"]:
+        try:
+            _, metrics = segment_customers(df, method=method, n_clusters=n_clusters)
+            results[method] = metrics
+        except Exception as e:
+            results[method] = {"error": str(e)}
+    return results
 
 
 def find_upgrade_candidates(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
