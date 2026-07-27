@@ -221,7 +221,7 @@ Every tool call is logged with step-by-step status shown during startup and an e
 
 ```bash
 # Clone the repository
-git clone [<repo-url>](https://github.com/avanishpandey10/Customer-Segmentation-and-Personalization-Agent-for-Retail-Banking)
+git clone https://github.com/avanishpandey10/Customer-Segmentation-and-Personalization-Agent-for-Retail-Banking
 cd Customer-Segmentation-and-Personalization-Agent-for-Retail-Banking
 
 # Create and activate virtual environment
