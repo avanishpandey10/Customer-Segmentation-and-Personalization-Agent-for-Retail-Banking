@@ -39,7 +39,7 @@ The agent simulates how a bank's analytics team would derive actionable insights
 | | |
 |---|---|
 | **Name** | Bank Customer Segmentation (1M+ Transactions) |
-| **Source** | Kaggle |
+| **Source** | Kaggle — https://www.kaggle.com/datasets/shivamb/bank-customer-segmentation |
 | **Description** | Real transactional data from an Indian bank (Aug–Oct 2016), containing customer demographics (`CustomerID`, `CustomerDOB`, `CustGender`, `CustLocation`) and transaction-level records (`TransactionAmount (INR)`, `CustAccountBalance`, `TransactionDate`, `TransactionTime`). All customer personal identifiers have been anonymized by the dataset publisher. |
 | **License/Usage** | Public dataset, used strictly for hackathon educational/demo purposes. No proprietary or confidential data is used. |
 | **Scale Note** | The full dataset contains 1M+ rows. By default the app samples 100,000 rows (`DEFAULT_SAMPLE_SIZE` in `src/config.py`, adjustable from the sidebar) to keep EDA and clustering fast for live demos. Toggle "Use full dataset" for complete analysis. |
@@ -48,7 +48,36 @@ The agent simulates how a bank's analytics team would derive actionable insights
 
 ## Architecture
 
-> _Add architecture diagram here_
+```mermaid
+flowchart TD
+    U[User Query] --> A[Gemini Agent<br/>Intent + Filter Extraction]
+    A -->|decides which tools to call| P{Tool Planner — 19 Tools}
+    P --> EDA[EDA Tools<br/>narrative / raw / targeted]
+    P --> FE[Feature Engineering<br/>RFM + behavioral signals + RF importance]
+    P --> SEG[Segmentation<br/>rules / kmeans / hierarchical / dbscan]
+    P --> EDGE[Edge Case Detection]
+    P --> EXP[Explainability<br/>per-customer + feature importance]
+    P --> PERSONA[Persona Generation<br/>data-driven narratives]
+    P --> INSIGHT[Automated Insights<br/>7 comparative discoveries]
+    P --> RETAIN[Retention Engine<br/>playbooks + at-risk detection]
+    P --> REC[Recommendations<br/>cross-sell / upgrade candidates]
+    P --> KPI[KPI Dashboard]
+    P --> MEM[Conversation Memory<br/>filter last result]
+    EDA --> R[Response Synthesis]
+    FE --> R
+    SEG --> R
+    EDGE --> R
+    EXP --> R
+    PERSONA --> R
+    INSIGHT --> R
+    RETAIN --> R
+    REC --> R
+    KPI --> R
+    MEM --> R
+    R --> OUT[Answer + Execution Log<br/>shown to user]
+```
+
+Ambiguous queries (e.g. "show me the best customers") are intercepted **in code** before reaching the LLM, guaranteeing a clarifying question rather than a guessed answer (human-in-the-loop).
 
 ---
 
@@ -186,14 +215,14 @@ Every tool call is logged with step-by-step status shown during startup and an e
 
 - Python 3.9+
 - Gemini API key ([get one free](https://ai.google.dev/))
-- Bank Customer Segmentation dataset (download from Kaggle)
+- [Bank Customer Segmentation dataset](https://www.kaggle.com/datasets/shivamb/bank-customer-segmentation) (download from Kaggle)
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
-cd <your-repo-name>
+git clone [<repo-url>](https://github.com/avanishpandey10/Customer-Segmentation-and-Personalization-Agent-for-Retail-Banking)
+cd Customer-Segmentation-and-Personalization-Agent-for-Retail-Banking
 
 # Create and activate virtual environment
 python -m venv venv
@@ -362,4 +391,4 @@ pytest tests/ -v
 
 ## License
 
-This project is built for educational/hackathon demonstration purposes using the publicly available Bank Customer Segmentation dataset from Kaggle. No proprietary or confidential data is used.
+This project is built for educational/hackathon demonstration purposes using the publicly available Bank Customer Segmentation dataset from Kaggle: https://www.kaggle.com/datasets/shivamb/bank-customer-segmentation. No proprietary or confidential data is used.
